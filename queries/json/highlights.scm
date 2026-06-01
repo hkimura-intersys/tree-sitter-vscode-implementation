@@ -1,7 +1,7 @@
 (pair
-  key: (_) @string.special.key)
-
-(string) @string
+  key: (_) @keyword
+  value: (_) @string
+)
 
 (number) @number
 
@@ -9,7 +9,7 @@
   (null)
   (true)
   (false)
-] @enum.builtin
+] @enum.defaultLibrary
 
 (escape_sequence) @string
 

@@ -7,7 +7,7 @@
     "name": "Hannah Kimura",
     "url": "https://github.com/hkimura-intersys"
   },
-  "publisher": "Hannah Kimura",
+  "publisher": "hkimura-intersys",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -22,7 +22,7 @@
   "activationEvents": [
     "onLanguage"
   ],
-  "main": "./src/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "languages": [
       {
@@ -216,10 +216,10 @@
     }
   },
   "scripts": {
-    "lint:check": "eslint src/ --ext ts",
-    "lint:fix": "eslint src/ --ext ts --fix",
-    "format:check": "prettier src/ --check",
-    "format:fix": "prettier src/ --write",
+    "lint:check": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format:check": "prettier \"src/**/*.ts\" --check",
+    "format:fix": "prettier \"src/**/*.ts\" --write",
     "clean": "rm -rf node_modules && rm -rf dist",
     "prebuild": "rm -rf dist && mkdir dist && cp node_modules/web-tree-sitter/web-tree-sitter.wasm dist/",
     "build": "tsc --noEmit && webpack && npm run format:check && npm run lint:check",

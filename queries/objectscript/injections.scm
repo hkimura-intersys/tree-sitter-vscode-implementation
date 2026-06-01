@@ -22,8 +22,9 @@
   (angled_bracket_fenced_text) @injection.content
   (#set! injection.language "xml"))
 
+
 ; === END CORE ===
-; === BEGIN UDL ===
+; === BEGIN LOCAL ===
 ; Keywords, one of type language = "python", none of type codemode
 ; External method body injection based on [ Language = ... ]
 (method_definition
@@ -32,28 +33,26 @@
       (typename) @_lang))
   (external_method_body_content) @injection.content
   (#set! injection.include-children "true")
-  (#match? @_lang "^[Pp][Yy][Tt][Hh][Oo][Nn]$")
+  (#any-of? @_lang "python" "Python" "PYTHON")
   (#set! injection.language "python"))
 
-; TODO: use TSQL grammar (right now, the most complete one is sql)
 (method_definition
   (external_method_keywords
     (method_keyword_language
       (typename) @_lang))
   (external_method_body_content) @injection.content
   (#set! injection.include-children "true")
-  (#match? @_lang "^[Tt][Ss][Qq][Ll]$")
-  (#set! injection.language "sql"))
+  (#any-of? @_lang "tsql" "TSQL" "tSQL" "tSql" "TSql")
+  (#set! injection.language "tsql"))
 
-; TODO: use ISPL grammar (right now, the most complete one is sql)
 (method_definition
   (external_method_keywords
     (method_keyword_language
       (typename) @_lang))
   (external_method_body_content) @injection.content
   (#set! injection.include-children "true")
-  (#match? @_lang "^[Ii][Ss][Pp][Ll]$")
-  (#set! injection.language "sql"))
+  (#any-of? @_lang "ispl" "ISPL" "ISpl" "iSpl")
+  (#set! injection.language "ispl"))
 
 ; External trigger with python body
 ((trigger
@@ -63,11 +62,10 @@
         (typename) @_lang))
     (external_method_body_content) @injection.content))
   (#set! injection.include-children "true")
-  (#match? @_lang "^[Pp][Yy][Tt][Hh][Oo][Nn]$")
+  (#any-of? @_lang "python" "Python" "PYTHON")
   (#set! injection.language "python"))
 
 ; External trigger with TSQL body
-; TODO: use TSQL grammar (right now, the most complete one is sql)
 ((trigger
   (external_trigger
     (trigger_keywords
@@ -75,8 +73,8 @@
         (typename) @_lang))
     (external_method_body_content) @injection.content))
   (#set! injection.include-children "true")
-  (#match? @_lang "^[Tt][Ss][Qq][Ll]$")
-  (#set! injection.language "sql"))
+  (#any-of? @_lang "tsql" "TSQL" "tSQL" "tSql" "TSql")
+  (#set! injection.language "tsql"))
 
 ; A query must be of type %SQLQuery to have an SQL body, otherwise the body
 ; is empty
@@ -84,7 +82,7 @@
   (return_type
     (typename
       (identifier) @_querytype
-      (#match? @_querytype "^%[Ss][Qq][Ll][Qq][Uu][Ee][Rr][Yy]$")))
+      (#any-of? @_querytype "%SqlQuery" "%sqlquery" "%SQLQUERY" "%Sqlquery" "%SQLQuery")))
   (query_body
     (query_body_content) @injection.content)
   (#set! injection.language "sql")
@@ -104,7 +102,7 @@
         (typename) @_mt))
     (external_method_body_content) @injection.content)
   (#set! injection.include-children "true")
-  (#match? @_mt "^\"?text/markdown\"?$")
+  (#any-of? @_mt "text/markdown" "\"text/markdown\"")
   (#set! injection.language "markdown"))
 
 ; XML MimeTypes
@@ -115,8 +113,7 @@
         (typename) @_mt))
     (external_method_body_content) @injection.content)
   (#set! injection.include-children "true")
-  (#match? @_mt
-    "^\"?([Tt][Ee][Xx][Tt]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn])/[Xx][Mm][Ll]\"?$")
+  (#any-of? @_mt "text/xml" "\"text/xml\"" "application/xml" "\"application/xml\"")
   (#set! injection.language "xml"))
 
 ; text/html
@@ -127,7 +124,7 @@
         (typename) @_mt))
     (external_method_body_content) @injection.content)
   (#set! injection.include-children "true")
-  (#match? @_mt "^\"?text/html\"?$")
+  (#any-of? @_mt "text/html" "\"text/html\"")
   (#set! injection.language "html"))
 
 ; application/json
@@ -138,7 +135,7 @@
         (typename) @_mt))
     (external_method_body_content) @injection.content)
   (#set! injection.include-children "true")
-  (#match? @_mt "^\"?application/json\"?$")
+  (#any-of? @_mt "application/json" "\"application/json\"")
   (#set! injection.language "json"))
 
 ; text/yaml or application/yaml
@@ -149,8 +146,7 @@
         (typename) @_mt))
     (external_method_body_content) @injection.content)
   (#set! injection.include-children "true")
-  (#match? @_mt
-    "^\"?([Tt][Ee][Xx][Tt]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn])/[Yy][Aa][Mm][Ll]\"?$")
+  (#any-of? @_mt "text/yaml" "\"text/yaml\"" "application/yaml" "\"application/yaml\"")
   (#set! injection.language "yaml"))
 
 ; text/css
@@ -161,7 +157,7 @@
         (typename) @_mt))
     (external_method_body_content) @injection.content)
   (#set! injection.include-children "true")
-  (#match? @_mt "^\"?text/css\"?$")
+  (#any-of? @_mt "text/css" "\"text/css\"")
   (#set! injection.language "css"))
 
 ; -----------------------------------------
@@ -181,6 +177,4 @@
   (#set! injection.language "xml")
   (#set! injection.include-children "true"))
 
-; === END UDL ===
-; === BEGIN LOCAL ===
 ; === END LOCAL ===

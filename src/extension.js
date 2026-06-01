@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const fs = __importStar(require("fs"));
+const node_perf_hooks_1 = require("node:perf_hooks");
 const vscode = __importStar(require("vscode"));
 const ts = __importStar(require("web-tree-sitter"));
 const web_tree_sitter_1 = require("web-tree-sitter");
@@ -211,6 +212,28 @@ function log(messageOrCallback, data) {
         }
     }
 }
+function formatDuration(durationMs) {
+    return `${durationMs.toFixed(1)}ms`;
+}
+function formatPoint(point) {
+    return `${point.row}:${point.column}`;
+}
+function formatChangedRanges(ranges, limit = 3) {
+    if (ranges.length === 0) {
+        return "none";
+    }
+    const summary = ranges
+        .slice(0, limit)
+        .map((range) => `${formatPoint(range.startPosition)}-${formatPoint(range.endPosition)}`)
+        .join(", ");
+    return ranges.length > limit ? `${summary}, ...` : summary;
+}
+function throwIfCancelled(cancellationToken, stage) {
+    if (cancellationToken.isCancellationRequested) {
+        log(() => `Cancelled ${stage}`);
+        throw new vscode.CancellationError();
+    }
+}
 /**
  * Called once on extension initialization and again if the reload command is triggered.
  * It reads the configuration and registers the semantic tokens provider.
@@ -247,6 +270,7 @@ function activate(context) {
         selectionProvider.dispose();
         onDidChange.dispose();
         onDidClose.dispose();
+        cache.clear();
         context.subscriptions.length = 0;
         // reinitialize the extension
         activate(context);
@@ -293,6 +317,7 @@ class LanguageCache {
         const tree = lang.parser.parse(document.getText());
         if (tree) {
             this.trees.set(uri, tree);
+            return tree.copy();
         }
         return tree;
     }
@@ -309,6 +334,7 @@ class LanguageCache {
         if (!lang)
             return;
         const changes = [...event.contentChanges].sort((a, b) => b.rangeOffset - a.rangeOffset);
+        const editStartedAt = node_perf_hooks_1.performance.now();
         for (const change of changes) {
             const startPosition = {
                 row: change.range.start.line,
@@ -334,13 +360,35 @@ class LanguageCache {
                 newEndPosition,
             }));
         }
+        const editDuration = node_perf_hooks_1.performance.now() - editStartedAt;
+        const parseStartedAt = node_perf_hooks_1.performance.now();
         const newTree = lang.parser.parse(event.document.getText(), tree);
+        const parseDuration = node_perf_hooks_1.performance.now() - parseStartedAt;
         if (newTree) {
+            const changedRanges = tree.getChangedRanges(newTree);
             this.trees.set(uri, newTree);
+            if (newTree !== tree) {
+                tree.delete();
+            }
+            log(() => `Incremental reparse ${event.document.uri.fsPath}@v${event.document.version}: ${changes.length} change(s), edit ${formatDuration(editDuration)}, parse ${formatDuration(parseDuration)}, changed ranges ${changedRanges.length} (${formatChangedRanges(changedRanges)})`);
+        }
+        else {
+            log(() => `Incremental reparse failed for ${event.document.uri.fsPath}@v${event.document.version} after ${formatDuration(parseDuration)}`);
         }
     }
     removeDocument(uri) {
-        this.trees.delete(uri.toString());
+        const key = uri.toString();
+        const tree = this.trees.get(key);
+        if (tree) {
+            tree.delete();
+            this.trees.delete(key);
+        }
+    }
+    clear() {
+        for (const tree of this.trees.values()) {
+            tree.delete();
+        }
+        this.trees.clear();
     }
 }
 async function initLanguage(config) {
@@ -379,6 +427,23 @@ function addPosition(range, pos) {
         ? new vscode.Position(range.end.line + pos.line, range.end.character + pos.character)
         : new vscode.Position(range.end.line + pos.line, range.end.character);
     return new vscode.Range(start, end);
+}
+function comparePositions(a, b) {
+    if (a.line !== b.line) {
+        return a.line - b.line;
+    }
+    return a.character - b.character;
+}
+function positionsEqual(a, b) {
+    return a.line === b.line && a.character === b.character;
+}
+function rangesEqual(a, b) {
+    return positionsEqual(a.start, b.start) && positionsEqual(a.end, b.end);
+}
+function properlyContainsRange(outer, inner) {
+    return (comparePositions(outer.start, inner.start) <= 0 &&
+        comparePositions(outer.end, inner.end) >= 0 &&
+        !rangesEqual(outer, inner));
 }
 function parseCaptureName(name) {
     const parts = name.split(".");
@@ -445,35 +510,68 @@ class SemanticTokensProvider {
      * Called regularly by VSCode to provide semantic tokens for the given document.
      * It parses the document with the corresponding language parser and returns the tokens.
      */
-    async provideDocumentSemanticTokens(document, token) {
+    async provideDocumentSemanticTokens(document, cancellationToken) {
+        const documentLabel = `${document.uri.fsPath}@v${document.version}`;
+        const startedAt = node_perf_hooks_1.performance.now();
+        throwIfCancelled(cancellationToken, `semantic tokens for ${documentLabel} before language load`);
+        const languageStartedAt = node_perf_hooks_1.performance.now();
         const tsLang = await this.cache.getLanguage(document.languageId);
+        const languageDuration = node_perf_hooks_1.performance.now() - languageStartedAt;
         if (tsLang === undefined) {
             throw new Error("No config for lang provided.");
         }
+        throwIfCancelled(cancellationToken, `semantic tokens for ${documentLabel} after language load`);
+        const treeStartedAt = node_perf_hooks_1.performance.now();
         const tree = this.cache.getTree(document);
+        const treeDuration = node_perf_hooks_1.performance.now() - treeStartedAt;
         if (tree === null) {
             throw new Error("Failed to parse document.");
         }
-        const tokens = await this.parseToTokens(tsLang, tree, {
-            row: 0,
-            column: 0,
-        });
-        const builder = new vscode.SemanticTokensBuilder(LEGEND);
-        tokens.forEach((token) => builder.push(token.range, token.type, token.modifiers));
-        return builder.build();
+        try {
+            const tokenizeStartedAt = node_perf_hooks_1.performance.now();
+            const tokens = await this.parseToTokens(tsLang, tree, {
+                row: 0,
+                column: 0,
+            }, cancellationToken);
+            const tokenizeDuration = node_perf_hooks_1.performance.now() - tokenizeStartedAt;
+            throwIfCancelled(cancellationToken, `semantic tokens for ${documentLabel} before builder`);
+            const buildStartedAt = node_perf_hooks_1.performance.now();
+            const builder = new vscode.SemanticTokensBuilder(LEGEND);
+            tokens.forEach((semanticToken) => builder.push(semanticToken.range, semanticToken.type, semanticToken.modifiers));
+            const result = builder.build();
+            const buildDuration = node_perf_hooks_1.performance.now() - buildStartedAt;
+            log(() => `Semantic tokens ${documentLabel}: ${tokens.length} token(s) in ${formatDuration(node_perf_hooks_1.performance.now() - startedAt)} (language ${formatDuration(languageDuration)}, tree ${formatDuration(treeDuration)}, tokenize ${formatDuration(tokenizeDuration)}, build ${formatDuration(buildDuration)})`);
+            return result;
+        }
+        finally {
+            tree.delete();
+        }
     }
     /**
      * Returns the highlighting tokens for the given syntax tree.
      * Calls `getInjections` for nested injections.
      */
-    async parseToTokens(lang, tree, startPosition) {
+    async parseToTokens(lang, tree, startPosition, cancellationToken) {
+        throwIfCancelled(cancellationToken, "highlight query before match");
         const { highlightQuery, injectionQuery } = lang;
+        const highlightMatchStartedAt = node_perf_hooks_1.performance.now();
         const matches = highlightQuery.matches(tree.rootNode);
-        log(() => `Highlight matches: ${matches.length}, has injection query: ${injectionQuery !== undefined}`);
-        let tokens = this.matchesToTokens(lang, matches);
+        const highlightMatchDuration = node_perf_hooks_1.performance.now() - highlightMatchStartedAt;
+        throwIfCancelled(cancellationToken, "highlight query after match");
+        const matchTokenizeStartedAt = node_perf_hooks_1.performance.now();
+        let tokens = this.matchesToTokens(lang, matches, cancellationToken);
+        const matchTokenizeDuration = node_perf_hooks_1.performance.now() - matchTokenizeStartedAt;
+        let injectionCount = 0;
+        let injectionQueryDuration = 0;
+        let mergeDuration = 0;
         if (injectionQuery !== undefined) {
-            const injections = await this.getInjections(injectionQuery, tree.rootNode);
+            const injectionStartedAt = node_perf_hooks_1.performance.now();
+            const injections = await this.getInjections(injectionQuery, tree.rootNode, cancellationToken);
+            injectionQueryDuration = node_perf_hooks_1.performance.now() - injectionStartedAt;
+            injectionCount = injections.length;
+            throwIfCancelled(cancellationToken, "injection processing after query");
             // merge the injection tokens with the main tokens
+            const mergeStartedAt = node_perf_hooks_1.performance.now();
             for (const injection of injections) {
                 if (injection.tokens.length > 0) {
                     const range = injection.range;
@@ -501,16 +599,21 @@ class SemanticTokensProvider {
                 }
             }
             tokens = tokens.concat(injections.map((injection) => injection.tokens).flat());
+            mergeDuration = node_perf_hooks_1.performance.now() - mergeStartedAt;
         }
+        throwIfCancelled(cancellationToken, "token offset adjustment before map");
+        const offsetStartedAt = node_perf_hooks_1.performance.now();
         tokens = tokens.map((token) => {
             return {
                 ...token,
                 range: addPosition(token.range, convertPosition(startPosition)),
             };
         });
+        const offsetDuration = node_perf_hooks_1.performance.now() - offsetStartedAt;
+        log(() => `Highlight pipeline: ${matches.length} match(es), ${tokens.length} token(s), ${injectionCount} injection(s) (match ${formatDuration(highlightMatchDuration)}, captures ${formatDuration(matchTokenizeDuration)}, injections ${formatDuration(injectionQueryDuration)}, merge ${formatDuration(mergeDuration)}, offset ${formatDuration(offsetDuration)})`);
         return tokens;
     }
-    matchesToTokens(lang, matches) {
+    matchesToTokens(lang, matches, cancellationToken) {
         const unsplitTokens = matches
             .flatMap((match) => match.captures)
             .flatMap((capture) => {
@@ -558,45 +661,81 @@ class SemanticTokensProvider {
                 return [];
             }
         });
-        return unsplitTokens
-            .flatMap((token) => {
-            // Get all tokens contained within this token
-            const contained = unsplitTokens.filter((t) => !token.range.isEqual(t.range) && token.range.contains(t.range));
-            if (contained.length > 0) {
-                // Sort contained tokens by their start position
-                const sortedContained = contained.sort((a, b) => a.range.start.compareTo(b.range.start));
-                const resultTokens = [];
-                let currentPos = token.range.start;
-                // Create tokens for the gaps between contained tokens
-                for (const containedToken of sortedContained) {
-                    // If there's a gap before this contained token, create a token for it
-                    if (currentPos.compareTo(containedToken.range.start) < 0) {
-                        resultTokens.push({
-                            ...token,
-                            range: new vscode.Range(currentPos, containedToken.range.start),
-                        });
-                    }
-                    currentPos = containedToken.range.end;
-                }
-                // Add token for the gap after the last contained token if needed
-                if (currentPos.compareTo(token.range.end) < 0) {
-                    resultTokens.push({
-                        ...token,
-                        range: new vscode.Range(currentPos, token.range.end),
-                    });
-                }
-                return resultTokens;
+        const sortedTokens = [...unsplitTokens].sort((a, b) => {
+            const startDiff = comparePositions(a.range.start, b.range.start);
+            if (startDiff !== 0) {
+                return startDiff;
+            }
+            return comparePositions(b.range.end, a.range.end);
+        });
+        const groups = [];
+        for (const [index, semanticToken] of sortedTokens.entries()) {
+            if (index % 500 === 0) {
+                throwIfCancelled(cancellationToken, `token grouping at ${index}/${sortedTokens.length}`);
+            }
+            const lastGroup = groups[groups.length - 1];
+            if (lastGroup && rangesEqual(lastGroup.range, semanticToken.range)) {
+                lastGroup.tokens.push(semanticToken);
             }
             else {
-                return token;
+                groups.push({
+                    range: semanticToken.range,
+                    tokens: [semanticToken],
+                    children: [],
+                });
             }
-        })
-            .flatMap(splitToken);
+        }
+        const groupStack = [];
+        for (const [index, group] of groups.entries()) {
+            if (index % 500 === 0) {
+                throwIfCancelled(cancellationToken, `token nesting at ${index}/${groups.length}`);
+            }
+            while (groupStack.length > 0 &&
+                !properlyContainsRange(groupStack[groupStack.length - 1].range, group.range)) {
+                groupStack.pop();
+            }
+            if (groupStack.length > 0) {
+                groupStack[groupStack.length - 1].children.push(group);
+            }
+            groupStack.push(group);
+        }
+        const splitContainedTokens = [];
+        for (const [index, group] of groups.entries()) {
+            if (index % 500 === 0) {
+                throwIfCancelled(cancellationToken, `token splitting at ${index}/${groups.length}`);
+            }
+            if (group.children.length === 0) {
+                splitContainedTokens.push(...group.tokens);
+                continue;
+            }
+            for (const semanticToken of group.tokens) {
+                let currentPos = semanticToken.range.start;
+                for (const child of group.children) {
+                    if (comparePositions(currentPos, child.range.start) < 0) {
+                        splitContainedTokens.push({
+                            ...semanticToken,
+                            range: new vscode.Range(currentPos, child.range.start),
+                        });
+                    }
+                    if (comparePositions(currentPos, child.range.end) < 0) {
+                        currentPos = child.range.end;
+                    }
+                }
+                if (comparePositions(currentPos, semanticToken.range.end) < 0) {
+                    splitContainedTokens.push({
+                        ...semanticToken,
+                        range: new vscode.Range(currentPos, semanticToken.range.end),
+                    });
+                }
+            }
+        }
+        throwIfCancelled(cancellationToken, "capture splitting before multiline split");
+        return splitContainedTokens.flatMap(splitToken);
     }
     /**
      * Get the injection range and tokens for a specific match.
      */
-    async getInjection(match) {
+    async getInjection(match, cancellationToken) {
         // determine language
         const { "injection.language": injectionLanguage,
         // TODO: add support for self and parent injections
@@ -630,21 +769,31 @@ class SemanticTokensProvider {
         const langConfig = await this.cache.getLanguage(lang);
         if (langConfig === undefined)
             return null;
+        throwIfCancelled(cancellationToken, `injection parse for ${lang}`);
         const injectionTree = langConfig.parser.parse(capture.node.text);
         if (injectionTree === null)
             return null;
-        const tokens = await this.parseToTokens(langConfig, injectionTree, capture.node.startPosition);
-        const range = new vscode.Range(convertPosition(capture.node.startPosition), convertPosition(capture.node.endPosition));
-        return { range, tokens };
+        try {
+            const tokens = await this.parseToTokens(langConfig, injectionTree, capture.node.startPosition, cancellationToken);
+            const range = new vscode.Range(convertPosition(capture.node.startPosition), convertPosition(capture.node.endPosition));
+            return { range, tokens };
+        }
+        finally {
+            injectionTree.delete();
+        }
     }
     /**
      * Matches the given injection query against the given node and returns the highlighting tokens.
      * This also works for nested injections.
      */
-    async getInjections(injectionQuery, node) {
+    async getInjections(injectionQuery, node, cancellationToken) {
+        throwIfCancelled(cancellationToken, "injection query before match");
+        const queryStartedAt = node_perf_hooks_1.performance.now();
         const matches = injectionQuery.matches(node);
-        log(() => `Injection query produced ${matches.length} match(es)`);
-        const injections = matches.map(async (match) => await this.getInjection(match));
+        const queryDuration = node_perf_hooks_1.performance.now() - queryStartedAt;
+        log(() => `Injection query produced ${matches.length} match(es) in ${formatDuration(queryDuration)}`);
+        throwIfCancelled(cancellationToken, "injection query after match");
+        const injections = matches.map(async (match) => await this.getInjection(match, cancellationToken));
         return (await Promise.all(injections)).filter((injection) => injection !== null);
     }
 }
@@ -653,38 +802,44 @@ class SelectionRangeProvider {
     constructor(cache) {
         this.cache = cache;
     }
-    async provideSelectionRanges(document, positions, token) {
+    async provideSelectionRanges(document, positions, cancellationToken) {
         await this.cache.getLanguage(document.languageId);
         const tree = this.cache.getTree(document);
         if (tree === null) {
             return [];
         }
-        return positions
-            .map((position) => {
-            const tsPoint = {
-                row: position.line,
-                column: position.character,
-            };
-            let node = tree.rootNode.descendantForPosition(tsPoint);
-            // Collect ranges from innermost to outermost, skipping duplicates
-            const ranges = [];
-            while (node !== null) {
-                const range = new vscode.Range(convertPosition(node.startPosition), convertPosition(node.endPosition));
-                if (ranges.length === 0 ||
-                    !range.isEqual(ranges[ranges.length - 1])) {
-                    ranges.push(range);
+        try {
+            throwIfCancelled(cancellationToken, `selection ranges for ${document.uri.fsPath}@v${document.version}`);
+            return positions
+                .map((position) => {
+                const tsPoint = {
+                    row: position.line,
+                    column: position.character,
+                };
+                let node = tree.rootNode.descendantForPosition(tsPoint);
+                // Collect ranges from innermost to outermost, skipping duplicates
+                const ranges = [];
+                while (node !== null) {
+                    const range = new vscode.Range(convertPosition(node.startPosition), convertPosition(node.endPosition));
+                    if (ranges.length === 0 ||
+                        !range.isEqual(ranges[ranges.length - 1])) {
+                        ranges.push(range);
+                    }
+                    node = node.parent;
                 }
-                node = node.parent;
-            }
-            // Build the chain from outermost to innermost so that
-            // each SelectionRange's parent is the next larger range
-            let selectionRange;
-            for (let i = ranges.length - 1; i >= 0; i--) {
-                selectionRange = new vscode.SelectionRange(ranges[i], selectionRange);
-            }
-            return selectionRange;
-        })
-            .filter((selectionRange) => selectionRange !== undefined);
+                // Build the chain from outermost to innermost so that
+                // each SelectionRange's parent is the next larger range
+                let selectionRange;
+                for (let i = ranges.length - 1; i >= 0; i--) {
+                    selectionRange = new vscode.SelectionRange(ranges[i], selectionRange);
+                }
+                return selectionRange;
+            })
+                .filter((selectionRange) => selectionRange !== undefined);
+        }
+        finally {
+            tree.delete();
+        }
     }
 }
 //# sourceMappingURL=extension.js.map

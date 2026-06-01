@@ -2,34 +2,37 @@
 ; Edit only the LOCAL section in composed files.
 ; File: highlights.scm
 ; === BEGIN EXPR ===
-(pattern_expression) @string.regexp
+(pattern_expression) @regexp
 
 [
   (json_number_literal)
   (numeric_literal)
-] @number
-
-[
   (json_boolean_literal)
   (json_null_literal)
-] @variable.definition.defaultLibrary
+] @number
 
 (json_object_literal_pair
-  (json_string_literal) @string.special)
+  (json_string_literal) @typeParameter)
 
 [
   (json_string_literal)
   (string_literal)
 ] @string
 
-[
-  (keyword_pound_pound_super)
-  (keyword_pound_pound_class)
-] @keyword.operator
+(system_defined_function) @function.defaultLibrary
 
-(system_defined_function) @function.builtin
+; this is because . is grouped into system_defined_function
+; and I want the dots to be the same color
+(class_method_call
+  "." @function.defaultLibrary)
 
-(sql_field_modifier) @keyword.modifier
+(byref_arg
+  "." @function.defaultLibrary)
+
+(oref_chain_segment
+  "." @function.defaultLibrary)
+
+(sql_field_modifier) @keyword.modification
 
 [
   (property_name)
@@ -37,24 +40,24 @@
   (sql_field_identifier)
 ] @property
 
-(method_name) @function.method
+(method_name) @method
 
 [
   (routine_name)
   (class_name)
 ] @type
 
-(macro_function) @function.macro
+(macro_function) @function
 
-(macro_constant) @enum.macro
+(macro_constant) @enum
 
-(objectscript_identifier) @variable.definition
+(objectscript_identifier) @variable
 
 [
   (ssvn)
   (system_defined_variable)
   "$$"
-] @variable.definition.defaultLibrary
+] @variable.defaultLibrary
 
 [
   (gvn)
@@ -64,109 +67,13 @@
 
 (method_arg) @parameter
 
-; I didn't include ( or ) in this, because they are often grouped
-; as part of a sequence that gets turned into a single token, so they
-; don't get matched, and one ends up getting colored differently than the other.
-[
-  "_"
-  ","
-  ":"
-  ".."
-  "..."
-  "'["
-  "']"
-  "']]"
-  "\""
-  "\"\""
-  "["
-  "]"
-  "]]"
-  "{"
-  "}"
-  "/"
-  "\\"
-  "#"
-  "|"
-  "||"
-  "$$"
-] @operator.defaultLibrary.delimiter
-
-[
-  "'&"
-  "&"
-  "&&"
-  "'<"
-  "'="
-  "'>"
-  "^"
-  "-"
-  "^$"
-  "+"
-  "<"
-  "<="
-  "="
-  ">"
-  ">="
-  "@"
-  "*"
-  "**"
-  "'"
-  "'!"
-  "'?"
-  "!"
-  "?"
-] @operator
-
-(bracket) @operator.defaultLibrary.bracket
-
 ; === END EXPR ===
 ; === BEGIN CORE ===
 (macro_arg) @property
 
-(macro_value) @enum.builtin
+(macro_value) @enum
 
-(macro_def) @keyword.directive.define
-
-[
-  (keyword_for)
-  (keyword_while)
-  (keyword_for_infinite)
-  (keyword_old_for_no_params)
-  (keyword_old_for_params)
-] @keyword.repeat
-
-[
-  (keyword_if)
-  (keyword_elseif)
-  (keyword_else)
-  (keyword_oldelse)
-  (old_else_remove)
-] @keyword.conditional
-
-[
-  (keyword_throw)
-  (keyword_try)
-  (keyword_catch)
-] @keyword.exception
-
-(keyword_return) @keyword.return
-
-[
-  (keyword_zbreak)
-  (keyword_debug)
-  (zbreak_command_option)
-  (keyword_trace)
-  (keyword_step)
-  (keyword_nostep)
-  (keyword_stepmethod)
-  (keyword_errortrap)
-  (keyword_interrupt)
-  (keyword_zkill)
-  (keyword_zn)
-  (keyword_zsu)
-  (keyword_ztrap)
-  (keyword_zz)
-] @keyword.debug
+(macro_def) @keyword.definition
 
 [
   (keyword_pound_define)
@@ -183,7 +90,7 @@
   (keyword_pound_delay)
   (locktype)
   (tag_end_if)
-] @keyword.directive
+] @keyword.definition
 
 [
   (keyword_as)
@@ -200,21 +107,30 @@
   (keyword_ext)
   (keyword_stepmethod)
   (keyword_destruct)
-] @keyword.modifier
+] @keyword.modification
 
 [
+  (keyword_zbreak)
+  (keyword_debug)
+  (zbreak_command_option)
+  (keyword_trace)
+  (keyword_step)
+  (keyword_nostep)
+  (keyword_stepmethod)
+  (keyword_errortrap)
+  (keyword_interrupt)
+  (keyword_zkill)
+  (keyword_zn)
+  (keyword_zsu)
+  (keyword_ztrap)
+  (keyword_zz)
   (keyword_print)
   (keyword_zprint)
   (keyword_set)
   (keyword_write)
-  (keyword_quit)
   (keyword_zwrite)
   (keyword_do)
   (keyword_do_old)
-  (keyword_old_if)
-  (old_if_remove)
-  (keyword_old_if_refactor)
-  (keyword_while)
   (keyword_kill)
   (keyword_lock)
   (keyword_read)
@@ -236,9 +152,23 @@
   (keyword_zremove)
   (command_keyword)
   (keyword_zload)
+  (keyword_for)
+  (keyword_while)
   (keyword_continue)
+  (keyword_quit)
   (keyword_break)
-] @function.builtin
+  (keyword_return)
+  (keyword_if)
+  (keyword_old_if)
+  (keyword_elseif)
+  (keyword_else)
+  (keyword_oldelse)
+  (keyword_throw)
+  (keyword_try)
+  (keyword_catch)
+  (keyword_pound_pound_super)
+  (keyword_pound_pound_class)
+] @function.defaultLibrary
 
 [
   (keyword_embedded_html)
@@ -246,7 +176,7 @@
   (keyword_embedded_sql_amp)
   (keyword_embedded_sql_hash)
   (keyword_js)
-] @keyword.operator
+] @keyword
 
 [
   (embedded_js_special_case_complete)
@@ -254,7 +184,7 @@
   (embedded_sql_reverse_marker)
   (html_marker)
   (html_marker_reversed)
-] @operator.defaultLibrary.special
+] @event
 
 [
   (line_comment_1)
@@ -262,76 +192,32 @@
   (line_comment_3)
   (line_comment_4)
   (block_comment)
-] @comment 
-
-(tag) @function.method
-
-(pound_if_special_case) @comment.inactive
-
-[
-  (command_quit
-    (keyword_quit) @function.builtin)
-  (command_else
-    [
-      (keyword_oldelse)
-      (old_else_remove)
-    ] @keyword.conditional)
-  (command_continue
-    (keyword_continue) @function.builtin)
-  (command_if
-    [
-      (keyword_old_if)
-      (keyword_old_if_refactor)
-      (old_if_remove)
-    ] @keyword.conditional)
-  (command_do
-    (keyword_do_old) @function.builtin)
-  (command_for
-    [
-      (keyword_for_infinite)
-      (keyword_old_for_params)
-      (keyword_old_for_no_params)
-      (keyword_for)
-    ] @keyword.repeat)
-  (command_lock
-    (keyword_lock) @function.builtin)
-  (command_return
-    (keyword_return) @keyword.return)
-  (command_halt_or_hang
-    (keyword_halt_or_hang) @function.builtin)
-  (command_break
-    (keyword_break) @function.builtin)
-  (command_tcommit
-    (keyword_tcommit) @function.builtin)
-  (command_trollback
-    (keyword_trollback) @function.builtin)
-  (command_tstart
-    (keyword_tstart) @function.builtin)
-  (command_zbreak
-    (keyword_zbreak) @keyword.debug)
+  (inline_comment)
+  (pound_if_special_case_else)
+  (pound_if_special_case)
+  (argumentless_inline_comment)
 ] @comment
+
+(tag) @method
 
 "--" @operator
 
-(dotted_statement
-  (dot) @operator.defaultLibrary.special.dots)
+(variable_datatype
+  "." @function.defaultLibrary)
+
+(instance_method_call
+  "." @function.defaultLibrary)
 
 ; === END CORE ===
 ; === BEGIN LOCAL ===
-(iris_username) @keyword.directive
+(iris_username) @keyword.definition
 
 [
   (keyword_import)
   (keyword_include)
   (keyword_includegenerator)
-] @keyword.import
-
-[
   (keyword_method)
   (keyword_classmethod)
-] @keyword.function
-
-[
   (keyword_class)
   (keyword_extends)
   (keyword_property)
@@ -344,11 +230,12 @@
   (keyword_trigger)
   (keyword_xdata)
   (keyword_storage)
-] @keyword.type
+] @function.defaultLibrary
 
 [
   (method_keyword_codemode_expression)
   (call_method_keyword)
+  (extent_index_keyword)
   (method_keyword)
   (class_keywords)
   (query_keywords)
@@ -359,7 +246,6 @@
   (parameter_keyword)
   (projection_keyword)
   (index_keyword)
-  (index_keyword_extent)
   (xdata_keyword)
   (xdata_keyword_mimetype)
   (property_keyword)
@@ -367,9 +253,9 @@
   (keyword_references)
   (keyword_byref)
   (keyword_output)
-] @keyword.modifier
+] @keyword.modification
 
-(documatic_line) @comment.documentation 
+(documatic_line) @comment
 
 [
   (query_name)

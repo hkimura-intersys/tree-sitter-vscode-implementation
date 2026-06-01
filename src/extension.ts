@@ -1,10 +1,13 @@
 import * as fs from "fs";
+import { performance } from "node:perf_hooks";
 import path from "path";
 import * as vscode from "vscode";
 import * as ts from "web-tree-sitter";
 import { Parser } from "web-tree-sitter";
 
-const OUTPUT_CHANNEL = vscode.window.createOutputChannel("tree-sitter-vscode-implementation");
+const OUTPUT_CHANNEL = vscode.window.createOutputChannel(
+  "tree-sitter-vscode-implementation",
+);
 
 // VSCode default token types and modifiers from:
 // https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide#standard-token-types-and-modifiers
@@ -152,11 +155,9 @@ const LANGUAGE_CONFIGS = [
     injections: "queries/objectscript_udl/injections.scm",
     injectionOnly: false,
   },
-  
 ] satisfies Config[];
 
 function resolveBundledConfigs(context: vscode.ExtensionContext): Config[] {
-  
   return LANGUAGE_CONFIGS.map((config) => ({
     ...config,
     parser: context.asAbsolutePath(config.parser),
@@ -197,7 +198,9 @@ type Injection = {
 
 function log(messageOrCallback: string | (() => string), data?: unknown) {
   // Only log in debug mode
-  const config = vscode.workspace.getConfiguration("tree-sitter-vscode-implementation");
+  const config = vscode.workspace.getConfiguration(
+    "tree-sitter-vscode-implementation",
+  );
   const isDebugMode = config.get("debug", false);
 
   if (isDebugMode) {
@@ -210,6 +213,39 @@ function log(messageOrCallback: string | (() => string), data?: unknown) {
     if (data) {
       OUTPUT_CHANNEL.appendLine(JSON.stringify(data, null, 2));
     }
+  }
+}
+
+function formatDuration(durationMs: number): string {
+  return `${durationMs.toFixed(1)}ms`;
+}
+
+function formatPoint(point: ts.Point): string {
+  return `${point.row}:${point.column}`;
+}
+
+function formatChangedRanges(ranges: ts.Range[], limit = 3): string {
+  if (ranges.length === 0) {
+    return "none";
+  }
+
+  const summary = ranges
+    .slice(0, limit)
+    .map(
+      (range) =>
+        `${formatPoint(range.startPosition)}-${formatPoint(range.endPosition)}`,
+    )
+    .join(", ");
+  return ranges.length > limit ? `${summary}, ...` : summary;
+}
+
+function throwIfCancelled(
+  cancellationToken: vscode.CancellationToken,
+  stage: string,
+): void {
+  if (cancellationToken.isCancellationRequested) {
+    log(() => `Cancelled ${stage}`);
+    throw new vscode.CancellationError();
   }
 }
 
@@ -262,6 +298,7 @@ export function activate(context: vscode.ExtensionContext) {
       selectionProvider.dispose();
       onDidChange.dispose();
       onDidClose.dispose();
+      cache.clear();
       context.subscriptions.length = 0;
       // reinitialize the extension
       activate(context);
@@ -315,6 +352,7 @@ class LanguageCache {
     const tree = lang.parser.parse(document.getText());
     if (tree) {
       this.trees.set(uri, tree);
+      return tree.copy();
     }
     return tree;
   }
@@ -334,6 +372,7 @@ class LanguageCache {
     const changes = [...event.contentChanges].sort(
       (a, b) => b.rangeOffset - a.rangeOffset,
     );
+    const editStartedAt = performance.now();
 
     for (const change of changes) {
       const startPosition: ts.Point = {
@@ -364,15 +403,43 @@ class LanguageCache {
         }),
       );
     }
+    const editDuration = performance.now() - editStartedAt;
 
+    const parseStartedAt = performance.now();
     const newTree = lang.parser.parse(event.document.getText(), tree);
+    const parseDuration = performance.now() - parseStartedAt;
     if (newTree) {
+      const changedRanges = tree.getChangedRanges(newTree);
       this.trees.set(uri, newTree);
+      if (newTree !== tree) {
+        tree.delete();
+      }
+      log(
+        () =>
+          `Incremental reparse ${event.document.uri.fsPath}@v${event.document.version}: ${changes.length} change(s), edit ${formatDuration(editDuration)}, parse ${formatDuration(parseDuration)}, changed ranges ${changedRanges.length} (${formatChangedRanges(changedRanges)})`,
+      );
+    } else {
+      log(
+        () =>
+          `Incremental reparse failed for ${event.document.uri.fsPath}@v${event.document.version} after ${formatDuration(parseDuration)}`,
+      );
     }
   }
 
   removeDocument(uri: vscode.Uri): void {
-    this.trees.delete(uri.toString());
+    const key = uri.toString();
+    const tree = this.trees.get(key);
+    if (tree) {
+      tree.delete();
+      this.trees.delete(key);
+    }
+  }
+
+  clear(): void {
+    for (const tree of this.trees.values()) {
+      tree.delete();
+    }
+    this.trees.clear();
   }
 }
 
@@ -391,7 +458,10 @@ async function initLanguage(config: Config): Promise<Language> {
   if (config.injections !== undefined) {
     const injectionText = fs.readFileSync(config.injections, "utf-8");
     log(() => `Loaded injections for ${config.lang} from ${config.injections}`);
-    log(() => `Injection query length for ${config.lang}: ${injectionText.length}`);
+    log(
+      () =>
+        `Injection query length for ${config.lang}: ${injectionText.length}`,
+    );
     injectionQuery = new ts.Query(lang, injectionText);
   }
   return {
@@ -422,6 +492,32 @@ function addPosition(range: vscode.Range, pos: vscode.Position): vscode.Range {
         )
       : new vscode.Position(range.end.line + pos.line, range.end.character);
   return new vscode.Range(start, end);
+}
+
+function comparePositions(a: vscode.Position, b: vscode.Position): number {
+  if (a.line !== b.line) {
+    return a.line - b.line;
+  }
+  return a.character - b.character;
+}
+
+function positionsEqual(a: vscode.Position, b: vscode.Position): boolean {
+  return a.line === b.line && a.character === b.character;
+}
+
+function rangesEqual(a: vscode.Range, b: vscode.Range): boolean {
+  return positionsEqual(a.start, b.start) && positionsEqual(a.end, b.end);
+}
+
+function properlyContainsRange(
+  outer: vscode.Range,
+  inner: vscode.Range,
+): boolean {
+  return (
+    comparePositions(outer.start, inner.start) <= 0 &&
+    comparePositions(outer.end, inner.end) >= 0 &&
+    !rangesEqual(outer, inner)
+  );
 }
 
 function parseCaptureName(name: string): { type: string; modifiers: string[] } {
@@ -485,6 +581,12 @@ function splitToken(token: Token): Token[] {
   }
 }
 
+type TokenGroup = {
+  range: vscode.Range;
+  tokens: Token[];
+  children: TokenGroup[];
+};
+
 class SemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
   private readonly cache: LanguageCache;
 
@@ -498,25 +600,70 @@ class SemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
    */
   async provideDocumentSemanticTokens(
     document: vscode.TextDocument,
-    token: vscode.CancellationToken,
+    cancellationToken: vscode.CancellationToken,
   ) {
+    const documentLabel = `${document.uri.fsPath}@v${document.version}`;
+    const startedAt = performance.now();
+
+    throwIfCancelled(
+      cancellationToken,
+      `semantic tokens for ${documentLabel} before language load`,
+    );
+    const languageStartedAt = performance.now();
     const tsLang = await this.cache.getLanguage(document.languageId);
+    const languageDuration = performance.now() - languageStartedAt;
     if (tsLang === undefined) {
       throw new Error("No config for lang provided.");
     }
+    throwIfCancelled(
+      cancellationToken,
+      `semantic tokens for ${documentLabel} after language load`,
+    );
+
+    const treeStartedAt = performance.now();
     const tree = this.cache.getTree(document);
+    const treeDuration = performance.now() - treeStartedAt;
     if (tree === null) {
       throw new Error("Failed to parse document.");
     }
-    const tokens = await this.parseToTokens(tsLang, tree, {
-      row: 0,
-      column: 0,
-    });
-    const builder = new vscode.SemanticTokensBuilder(LEGEND);
-    tokens.forEach((token) =>
-      builder.push(token.range, token.type, token.modifiers),
-    );
-    return builder.build();
+
+    try {
+      const tokenizeStartedAt = performance.now();
+      const tokens = await this.parseToTokens(
+        tsLang,
+        tree,
+        {
+          row: 0,
+          column: 0,
+        },
+        cancellationToken,
+      );
+      const tokenizeDuration = performance.now() - tokenizeStartedAt;
+
+      throwIfCancelled(
+        cancellationToken,
+        `semantic tokens for ${documentLabel} before builder`,
+      );
+      const buildStartedAt = performance.now();
+      const builder = new vscode.SemanticTokensBuilder(LEGEND);
+      tokens.forEach((semanticToken) =>
+        builder.push(
+          semanticToken.range,
+          semanticToken.type,
+          semanticToken.modifiers,
+        ),
+      );
+      const result = builder.build();
+      const buildDuration = performance.now() - buildStartedAt;
+
+      log(
+        () =>
+          `Semantic tokens ${documentLabel}: ${tokens.length} token(s) in ${formatDuration(performance.now() - startedAt)} (language ${formatDuration(languageDuration)}, tree ${formatDuration(treeDuration)}, tokenize ${formatDuration(tokenizeDuration)}, build ${formatDuration(buildDuration)})`,
+      );
+      return result;
+    } finally {
+      tree.delete();
+    }
   }
 
   /**
@@ -527,17 +674,35 @@ class SemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
     lang: Language,
     tree: ts.Tree,
     startPosition: ts.Point,
+    cancellationToken: vscode.CancellationToken,
   ): Promise<Token[]> {
+    throwIfCancelled(cancellationToken, "highlight query before match");
     const { highlightQuery, injectionQuery } = lang;
+    const highlightMatchStartedAt = performance.now();
     const matches = highlightQuery.matches(tree.rootNode);
-    log(() => `Highlight matches: ${matches.length}, has injection query: ${injectionQuery !== undefined}`);
-    let tokens = this.matchesToTokens(lang, matches);
+    const highlightMatchDuration = performance.now() - highlightMatchStartedAt;
+    throwIfCancelled(cancellationToken, "highlight query after match");
+
+    const matchTokenizeStartedAt = performance.now();
+    let tokens = this.matchesToTokens(lang, matches, cancellationToken);
+    const matchTokenizeDuration = performance.now() - matchTokenizeStartedAt;
+
+    let injectionCount = 0;
+    let injectionQueryDuration = 0;
+    let mergeDuration = 0;
     if (injectionQuery !== undefined) {
+      const injectionStartedAt = performance.now();
       const injections = await this.getInjections(
         injectionQuery,
         tree.rootNode,
+        cancellationToken,
       );
+      injectionQueryDuration = performance.now() - injectionStartedAt;
+      injectionCount = injections.length;
+      throwIfCancelled(cancellationToken, "injection processing after query");
+
       // merge the injection tokens with the main tokens
+      const mergeStartedAt = performance.now();
       for (const injection of injections) {
         if (injection.tokens.length > 0) {
           const range = injection.range;
@@ -569,17 +734,31 @@ class SemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
       tokens = tokens.concat(
         injections.map((injection) => injection.tokens).flat(),
       );
+      mergeDuration = performance.now() - mergeStartedAt;
     }
+
+    throwIfCancelled(cancellationToken, "token offset adjustment before map");
+    const offsetStartedAt = performance.now();
     tokens = tokens.map((token) => {
       return {
         ...token,
         range: addPosition(token.range, convertPosition(startPosition)),
       };
     });
+    const offsetDuration = performance.now() - offsetStartedAt;
+
+    log(
+      () =>
+        `Highlight pipeline: ${matches.length} match(es), ${tokens.length} token(s), ${injectionCount} injection(s) (match ${formatDuration(highlightMatchDuration)}, captures ${formatDuration(matchTokenizeDuration)}, injections ${formatDuration(injectionQueryDuration)}, merge ${formatDuration(mergeDuration)}, offset ${formatDuration(offsetDuration)})`,
+    );
     return tokens;
   }
 
-  matchesToTokens(lang: Language, matches: ts.QueryMatch[]): Token[] {
+  matchesToTokens(
+    lang: Language,
+    matches: ts.QueryMatch[],
+    cancellationToken: vscode.CancellationToken,
+  ): Token[] {
     const unsplitTokens: Token[] = matches
       .flatMap((match) => match.captures)
       .flatMap((capture) => {
@@ -649,54 +828,114 @@ class SemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
         }
       });
 
-    return unsplitTokens
-      .flatMap((token) => {
-        // Get all tokens contained within this token
-        const contained = unsplitTokens.filter(
-          (t) => !token.range.isEqual(t.range) && token.range.contains(t.range),
+    const sortedTokens = [...unsplitTokens].sort((a, b) => {
+      const startDiff = comparePositions(a.range.start, b.range.start);
+      if (startDiff !== 0) {
+        return startDiff;
+      }
+
+      return comparePositions(b.range.end, a.range.end);
+    });
+
+    const groups: TokenGroup[] = [];
+    for (const [index, semanticToken] of sortedTokens.entries()) {
+      if (index % 500 === 0) {
+        throwIfCancelled(
+          cancellationToken,
+          `token grouping at ${index}/${sortedTokens.length}`,
         );
+      }
 
-        if (contained.length > 0) {
-          // Sort contained tokens by their start position
-          const sortedContained = contained.sort((a, b) =>
-            a.range.start.compareTo(b.range.start),
-          );
+      const lastGroup = groups[groups.length - 1];
+      if (lastGroup && rangesEqual(lastGroup.range, semanticToken.range)) {
+        lastGroup.tokens.push(semanticToken);
+      } else {
+        groups.push({
+          range: semanticToken.range,
+          tokens: [semanticToken],
+          children: [],
+        });
+      }
+    }
 
-          const resultTokens = [];
-          let currentPos = token.range.start;
+    const groupStack: TokenGroup[] = [];
+    for (const [index, group] of groups.entries()) {
+      if (index % 500 === 0) {
+        throwIfCancelled(
+          cancellationToken,
+          `token nesting at ${index}/${groups.length}`,
+        );
+      }
 
-          // Create tokens for the gaps between contained tokens
-          for (const containedToken of sortedContained) {
-            // If there's a gap before this contained token, create a token for it
-            if (currentPos.compareTo(containedToken.range.start) < 0) {
-              resultTokens.push({
-                ...token,
-                range: new vscode.Range(currentPos, containedToken.range.start),
-              });
-            }
-            currentPos = containedToken.range.end;
-          }
+      while (
+        groupStack.length > 0 &&
+        !properlyContainsRange(
+          groupStack[groupStack.length - 1].range,
+          group.range,
+        )
+      ) {
+        groupStack.pop();
+      }
 
-          // Add token for the gap after the last contained token if needed
-          if (currentPos.compareTo(token.range.end) < 0) {
-            resultTokens.push({
-              ...token,
-              range: new vscode.Range(currentPos, token.range.end),
+      if (groupStack.length > 0) {
+        groupStack[groupStack.length - 1].children.push(group);
+      }
+      groupStack.push(group);
+    }
+
+    const splitContainedTokens: Token[] = [];
+    for (const [index, group] of groups.entries()) {
+      if (index % 500 === 0) {
+        throwIfCancelled(
+          cancellationToken,
+          `token splitting at ${index}/${groups.length}`,
+        );
+      }
+
+      if (group.children.length === 0) {
+        splitContainedTokens.push(...group.tokens);
+        continue;
+      }
+
+      for (const semanticToken of group.tokens) {
+        let currentPos = semanticToken.range.start;
+
+        for (const child of group.children) {
+          if (comparePositions(currentPos, child.range.start) < 0) {
+            splitContainedTokens.push({
+              ...semanticToken,
+              range: new vscode.Range(currentPos, child.range.start),
             });
           }
 
-          return resultTokens;
-        } else {
-          return token;
+          if (comparePositions(currentPos, child.range.end) < 0) {
+            currentPos = child.range.end;
+          }
         }
-      })
-      .flatMap(splitToken);
+
+        if (comparePositions(currentPos, semanticToken.range.end) < 0) {
+          splitContainedTokens.push({
+            ...semanticToken,
+            range: new vscode.Range(currentPos, semanticToken.range.end),
+          });
+        }
+      }
+    }
+
+    throwIfCancelled(
+      cancellationToken,
+      "capture splitting before multiline split",
+    );
+    return splitContainedTokens.flatMap(splitToken);
   }
-  
+
   /**
    * Get the injection range and tokens for a specific match.
    */
-  async getInjection(match: ts.QueryMatch): Promise<Injection | null> {
+  async getInjection(
+    match: ts.QueryMatch,
+    cancellationToken: vscode.CancellationToken,
+  ): Promise<Injection | null> {
     // determine language
     const {
       "injection.language": injectionLanguage,
@@ -736,19 +975,26 @@ class SemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
     // get language config
     const langConfig = await this.cache.getLanguage(lang);
     if (langConfig === undefined) return null;
+    throwIfCancelled(cancellationToken, `injection parse for ${lang}`);
 
     const injectionTree = langConfig.parser.parse(capture.node.text);
     if (injectionTree === null) return null;
-    const tokens = await this.parseToTokens(
-      langConfig,
-      injectionTree,
-      capture.node.startPosition,
-    );
-    const range = new vscode.Range(
-      convertPosition(capture.node.startPosition),
-      convertPosition(capture.node.endPosition),
-    );
-    return { range, tokens };
+
+    try {
+      const tokens = await this.parseToTokens(
+        langConfig,
+        injectionTree,
+        capture.node.startPosition,
+        cancellationToken,
+      );
+      const range = new vscode.Range(
+        convertPosition(capture.node.startPosition),
+        convertPosition(capture.node.endPosition),
+      );
+      return { range, tokens };
+    } finally {
+      injectionTree.delete();
+    }
   }
 
   /**
@@ -758,11 +1004,20 @@ class SemanticTokensProvider implements vscode.DocumentSemanticTokensProvider {
   async getInjections(
     injectionQuery: ts.Query,
     node: ts.Node,
+    cancellationToken: vscode.CancellationToken,
   ): Promise<Injection[]> {
+    throwIfCancelled(cancellationToken, "injection query before match");
+    const queryStartedAt = performance.now();
     const matches = injectionQuery.matches(node);
-    log(() => `Injection query produced ${matches.length} match(es)`);
+    const queryDuration = performance.now() - queryStartedAt;
+    log(
+      () =>
+        `Injection query produced ${matches.length} match(es) in ${formatDuration(queryDuration)}`,
+    );
+    throwIfCancelled(cancellationToken, "injection query after match");
+
     const injections = matches.map(
-      async (match) => await this.getInjection(match),
+      async (match) => await this.getInjection(match, cancellationToken),
     );
     return (await Promise.all(injections)).filter(
       (injection): injection is Injection => injection !== null,
@@ -780,7 +1035,7 @@ class SelectionRangeProvider implements vscode.SelectionRangeProvider {
   async provideSelectionRanges(
     document: vscode.TextDocument,
     positions: vscode.Position[],
-    token: vscode.CancellationToken,
+    cancellationToken: vscode.CancellationToken,
   ): Promise<vscode.SelectionRange[]> {
     await this.cache.getLanguage(document.languageId);
     const tree = this.cache.getTree(document);
@@ -788,39 +1043,51 @@ class SelectionRangeProvider implements vscode.SelectionRangeProvider {
       return [];
     }
 
-    return positions
-      .map((position) => {
-        const tsPoint: ts.Point = {
-          row: position.line,
-          column: position.character,
-        };
-        let node: ts.Node | null = tree.rootNode.descendantForPosition(tsPoint);
+    try {
+      throwIfCancelled(
+        cancellationToken,
+        `selection ranges for ${document.uri.fsPath}@v${document.version}`,
+      );
+      return positions
+        .map((position) => {
+          const tsPoint: ts.Point = {
+            row: position.line,
+            column: position.character,
+          };
+          let node: ts.Node | null =
+            tree.rootNode.descendantForPosition(tsPoint);
 
-        // Collect ranges from innermost to outermost, skipping duplicates
-        const ranges: vscode.Range[] = [];
-        while (node !== null) {
-          const range = new vscode.Range(
-            convertPosition(node.startPosition),
-            convertPosition(node.endPosition),
-          );
-          if (
-            ranges.length === 0 ||
-            !range.isEqual(ranges[ranges.length - 1])
-          ) {
-            ranges.push(range);
+          // Collect ranges from innermost to outermost, skipping duplicates
+          const ranges: vscode.Range[] = [];
+          while (node !== null) {
+            const range = new vscode.Range(
+              convertPosition(node.startPosition),
+              convertPosition(node.endPosition),
+            );
+            if (
+              ranges.length === 0 ||
+              !range.isEqual(ranges[ranges.length - 1])
+            ) {
+              ranges.push(range);
+            }
+            node = node.parent;
           }
-          node = node.parent;
-        }
 
-        // Build the chain from outermost to innermost so that
-        // each SelectionRange's parent is the next larger range
-        let selectionRange: vscode.SelectionRange | undefined;
-        for (let i = ranges.length - 1; i >= 0; i--) {
-          selectionRange = new vscode.SelectionRange(ranges[i], selectionRange);
-        }
+          // Build the chain from outermost to innermost so that
+          // each SelectionRange's parent is the next larger range
+          let selectionRange: vscode.SelectionRange | undefined;
+          for (let i = ranges.length - 1; i >= 0; i--) {
+            selectionRange = new vscode.SelectionRange(
+              ranges[i],
+              selectionRange,
+            );
+          }
 
-        return selectionRange;
-      })
-      .filter((selectionRange) => selectionRange !== undefined);
+          return selectionRange;
+        })
+        .filter((selectionRange) => selectionRange !== undefined);
+    } finally {
+      tree.delete();
+    }
   }
 }
