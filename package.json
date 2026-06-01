@@ -1,0 +1,253 @@
+{
+  "name": "tree-sitter-vscode-implementation",
+  "displayName": "tree-sitter-vscode-implementation",
+  "description": "Language support for ObjectScript using tree-sitter-objectscript",
+  "version": "0.0.1",
+  "author": {
+    "name": "Hannah Kimura",
+    "url": "https://github.com/hkimura-intersys"
+  },
+  "publisher": "hkimura-intersys",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hkimura-intersys/tree-sitter-vscode-implementation"
+  },
+  "engines": {
+    "vscode": "^1.110.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "objectscript_udl",
+        "aliases": [
+          "ObjectScript UDL"
+        ],
+        "extensions": [
+          ".cls"
+        ]
+      },
+      {
+        "id": "objectscript_routine",
+        "aliases": [
+          "ObjectScript Routine"
+        ],
+        "extensions": [
+          ".mac",
+          ".inc",
+          ".int",
+          ".rtn"
+        ]
+      },
+      {
+        "id": "objectscript"
+      },
+      {
+        "id": "regex"
+      },
+      {
+        "id": "markdown_inline"
+      },
+      {
+        "id": "jsdoc"
+      },
+      {
+        "id": "css"
+      },
+      {
+        "id": "xml",
+        "extensions": [
+          ".xml"
+        ]
+      },
+      {
+        "id": "markdown",
+        "extensions": [
+          ".md"
+        ]
+      },
+      {
+        "id": "sql",
+        "extensions": [
+          ".sql"
+        ]
+      }, 
+      {
+        "id": "yaml",
+        "extensions": [
+          ".yaml",
+          ".yml"
+        ]
+      }, 
+      {
+        "id": "python",
+        "extensions": [
+          ".py"
+        ]
+      }, 
+      {
+        "id": "toml",
+        "extensions": [
+          ".toml"
+        ]
+      }, 
+      {
+        "id": "json",
+        "extensions": [
+          ".json"
+        ]
+      }, 
+      {
+        "id": "javascript",
+        "extensions": [
+          ".js",
+          ".jsx",
+          ".mjs",
+          ".cjs"
+        ]
+      }, 
+      {
+        "id": "html",
+        "extensions": [
+          ".html"
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "objectscriptTools.restartLanguageServer",
+        "title": "ObjectScript: Restart Language Server"
+      },
+
+      {
+        "command": "tree-sitter-vscode-implementation.reload",
+        "title": "tree-sitter-vscode-implementation: Reload"
+      }
+    ],
+    "configuration": {
+      "title": "objectscript-language-support",
+      "properties": {
+        "objectscriptLsp.server.path": {
+          "type": "string",
+          "default": "objectscript-lsp",
+          "description": "Path to the objectscript-lsp executable."
+        },
+        "objectscriptLsp.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Arguments passed to objectscript-lsp on startup."
+        },
+        "tree-sitter-vscode-implementation.languageConfigs": {
+          "description": "A list of objects with the keys \"lang\", \"parser\", and \"highlights\". Optionally \"injections\", \"injectionOnly\", and \"semanticTokenTypeMappings\" can be added.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "lang",
+              "parser",
+              "highlights"
+            ],
+            "properties": {
+              "lang": {
+                "type": "string",
+                "description": "The name of the language"
+              },
+              "parser": {
+                "type": "string",
+                "description": "The path to the parser `.wasm` file"
+              },
+              "highlights": {
+                "type": "string",
+                "description": "The path to the highlights `.scm` file"
+              },
+              "injections": {
+                "type": [
+                  "string",
+                  null
+                ],
+                "description": "The path to the injections `.scm` file"
+              },
+              "injectionOnly": {
+                "type": "boolean",
+                "default": false,
+                "description": "Use language only for injections, not for top-level syntax highlighting"
+              },
+              "semanticTokenTypeMappings": {
+                "type": "object",
+                "description": "Mappings from highlighting query names to VSCode token types and modifiers",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "targetTokenModifiers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "targetTokenType": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "targetTokenType"
+                  ]
+                }
+              }
+            }
+          },
+          "default": []
+        }, 
+        "tree-sitter-vscode-implementation.debug": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable debug logging"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "lint:check": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format:check": "prettier \"src/**/*.ts\" --check",
+    "format:fix": "prettier \"src/**/*.ts\" --write",
+    "clean": "rm -rf node_modules && rm -rf dist",
+    "prebuild": "rm -rf dist && mkdir dist && cp node_modules/web-tree-sitter/web-tree-sitter.wasm dist/",
+    "build": "tsc --noEmit && webpack && npm run format:check && npm run lint:check",
+    "watch": "webpack --watch",
+    "pretest": "npm run build",
+    "test": "vscode-test",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "vscode:prepublish": "npm run build && npm run package",
+    "compile": "tsc -p ./"
+  },
+  "dependencies": {
+    "@vscode/vsce": "^3.7.1",
+    "vscode-languageclient": "^9.0.1",
+    "web-tree-sitter": "^0.26.6"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.110.0",
+    "@typescript-eslint/eslint-plugin": "^8.57.0",
+    "@typescript-eslint/parser": "^8.57.0",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "3.7.4",
+    "ts-loader": "^9.5.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.49.0",
+    "webpack": "^5.105.4",
+    "webpack-cli": "^6.0.1"
+  }
+}
