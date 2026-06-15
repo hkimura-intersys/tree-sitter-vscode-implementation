@@ -205,7 +205,7 @@
 (variable_datatype
   "." @function.defaultLibrary)
 
-(instance_method_call
+(method_call
   "." @function.defaultLibrary)
 
 ; === END CORE ===
@@ -237,8 +237,8 @@
   (call_method_keyword)
   (extent_index_keyword)
   (method_keyword)
-  (class_keywords)
-  (query_keywords)
+  (class_keyword)
+  (query_keyword)
   (trigger_keyword)
   (method_keyword_language)
   (relationship_keyword)

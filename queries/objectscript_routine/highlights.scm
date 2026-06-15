@@ -75,6 +75,8 @@
 
 (macro_def) @keyword.definition
 
+(routine_type) @type.defaultLibrary
+
 [
   (keyword_pound_define)
   (keyword_pound_def1arg)
@@ -168,6 +170,7 @@
   (keyword_throw)
   (keyword_try)
   (keyword_catch)
+  (routine)
 ] @function.defaultLibrary
 
 [
@@ -205,5 +208,5 @@
 (variable_datatype
   "." @function.defaultLibrary)
 
-(instance_method_call
+(method_call
   "." @function.defaultLibrary)

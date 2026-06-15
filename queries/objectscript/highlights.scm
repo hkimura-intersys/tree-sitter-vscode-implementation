@@ -205,7 +205,7 @@
 (variable_datatype
   "." @function.defaultLibrary)
 
-(instance_method_call
+(method_call
   "." @function.defaultLibrary)
 
 ; === END CORE ===
@@ -285,4 +285,4 @@
 ; BEGIN ROUTINE 
 (routine_type) @type.defaultLibrary
 
-(routine) @keyword
+(routine) @function.defaultLibrary
